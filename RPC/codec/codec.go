@@ -4,11 +4,6 @@ import (
 	"io"
 )
 
-const (
-	GobType  Type = "application/gob"
-	JsonType Type = "application/json" // 不实现
-)
-
 type Type string
 
 // 这里我们使用conn初始化一个解析类型

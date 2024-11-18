@@ -7,6 +7,11 @@ import (
 	"log"
 )
 
+const (
+	GobType  Type = "application/gob"
+	JsonType Type = "application/json" // 不实现
+)
+
 // 对于jsonCodec实现也是类似的
 type GobCodec struct {
 	conn io.ReadWriteCloser
@@ -23,8 +28,10 @@ func NewGobCodec(conn io.ReadWriteCloser) Codec {
 	return &GobCodec{
 		conn: conn,
 		buf:  buf,
-		dec:  gob.NewDecoder(conn),
-		enc:  gob.NewEncoder(buf),
+		// 从conn解析出一个变量
+		dec: gob.NewDecoder(conn),
+		// 将buf编译存进conn
+		enc: gob.NewEncoder(buf),
 	}
 }
 

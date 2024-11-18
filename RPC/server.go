@@ -117,6 +117,14 @@ func (server *Server) readRequestHeader(cc codec.Codec) (*codec.Header, error) {
 	return &h, nil
 }
 
+func (server *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{}, sending *sync.Mutex) {
+	sending.Lock()
+	defer sending.Unlock()
+	if err := cc.Write(h, body); err != nil {
+		log.Println("rpc server: write response error:", err)
+	}
+}
+
 // 获取header和参数
 func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 	h, err := server.readRequestHeader(cc)
@@ -132,14 +140,6 @@ func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 		log.Println("rpc server: read argv err:", err)
 	}
 	return req, nil
-}
-
-func (server *Server) sendResponse(cc codec.Codec, h *codec.Header, body interface{}, sending *sync.Mutex) {
-	sending.Lock()
-	defer sending.Unlock()
-	if err := cc.Write(h, body); err != nil {
-		log.Println("rpc server: write response error:", err)
-	}
 }
 
 func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
