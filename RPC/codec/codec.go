@@ -21,7 +21,7 @@ func init() {
 // 用于协商信息
 type Header struct {
 	ServiceMethod string
-	Seq           int
+	Seq           uint64
 	Error         string
 }
 

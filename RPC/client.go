@@ -13,7 +13,7 @@ import (
 )
 
 type Call struct {
-	Seq           int
+	Seq           uint64
 	ServiceMethod string      //service.mathod
 	Args          interface{} //参数
 	Reply         interface{} // Call的响应
@@ -32,7 +32,7 @@ type Client struct {
 	sending  sync.Mutex // 发送上锁
 	header   codec.Header
 	mu       sync.Mutex // 对客户端操作时上锁
-	seq      int
+	seq      uint64
 	pending  map[uint64]*Call //悬挂未处理完的请求
 	closing  bool             // 用户关闭
 	shutdown bool             // 服务端要关闭
@@ -72,9 +72,9 @@ func (client *Client) registerCall(call *Call) (uint64, error) {
 	}
 	call.Seq = client.seq
 	// 核心就是将call挂在请求队列
-	client.pending[uint64(call.Seq)] = call
+	client.pending[call.Seq] = call
 	client.seq++
-	return uint64(call.Seq), nil
+	return call.Seq, nil
 }
 
 func (client *Client) removeCall(seq uint64) *Call {
@@ -105,7 +105,7 @@ func (client *Client) receive() {
 		if err = client.cc.ReadHeader(&h); err != nil {
 			break
 		}
-		call := client.removeCall(uint64(h.Seq))
+		call := client.removeCall(h.Seq)
 		switch {
 		case call == nil:
 			err = client.cc.ReadBody(nil)
@@ -122,6 +122,7 @@ func (client *Client) receive() {
 			call.done()
 		}
 	}
+	client.terminateCalls(err)
 }
 func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 	// 协商协议
@@ -142,7 +143,7 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 
 func newClientCodec(cc codec.Codec, opt *Option) *Client {
 	client := &Client{
-		seq:     1,
+		seq:     uint64(1),
 		cc:      cc,
 		opt:     opt,
 		pending: make(map[uint64]*Call),
@@ -192,7 +193,7 @@ func (client *Client) send(call *Call) {
 		return
 	}
 	client.header.ServiceMethod = call.ServiceMethod
-	client.seq = call.Seq
+	client.header.Seq = seq
 	client.header.Error = ""
 
 	if err := client.cc.Write(&client.header, call.Args); err != nil {
