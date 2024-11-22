@@ -3,12 +3,14 @@ package geerpc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hobbyGG/7days-gorpc/RPC/codec"
 )
@@ -59,13 +61,17 @@ func (server *Server) findService(ServiceMethod string) (svc *service, mtype *me
 }
 
 type Option struct {
-	MagicNumber int        // 协商的标识字符
-	CodecType   codec.Type // 协商使用的编码类型
+	MagicNumber       int        // 协商的标识字符
+	CodecType         codec.Type // 协商使用的编码类型
+	ConnectionTimeout time.Duration
+	HandleTimeout     time.Duration
 }
 
 var DefaultOption = &Option{
-	MagicNumber: MagicNumber,
-	CodecType:   codec.GobType, // 默认使用0x3bef5c对应的gob类型
+	MagicNumber:       MagicNumber,
+	CodecType:         codec.GobType, // 默认使用0x3bef5c对应的gob类型
+	ConnectionTimeout: 10 * time.Second,
+	HandleTimeout:     0,
 }
 
 // 默认处理
@@ -131,7 +137,7 @@ func (server *Server) serveCodec(cc codec.Codec) {
 			continue
 		}
 		// 正常获取请求，这里加锁是防止由于并发导致的提前退出的情况，使用waitgroup是常见的处理并发同步的手法
-		go server.handleRequest(cc, req, sending, wg)
+		go server.handleRequest(cc, req, sending, wg, 10*time.Second)
 	}
 	wg.Wait()
 	_ = cc.Close()
@@ -189,13 +195,39 @@ func (server *Server) readRequest(cc codec.Codec) (*request, error) {
 	return req, nil
 }
 
-func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup) {
+func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.Mutex, wg *sync.WaitGroup, timeout time.Duration) {
 	defer wg.Done()
-	err := req.svc.call(req.mtype, req.argv, req.replyv)
-	if err != nil {
-		req.h.Error = err.Error()
-		server.sendResponse(cc, req.h, invalidRequest, sending)
+	called := make(chan struct{})
+	sent := make(chan struct{})
+	go func() {
+		err := req.svc.call(req.mtype, req.argv, req.replyv)
+		called <- struct{}{}
+		if err != nil {
+			req.h.Error = err.Error()
+			server.sendResponse(cc, req.h, invalidRequest, sending)
+			sent <- struct{}{}
+			return
+		}
+		server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+		sent <- struct{}{}
+	}()
+
+	// 如果为0就是不设置超时
+	if timeout == 0 {
+		<-called
+		<-sent
 		return
 	}
+
+	select {
+	case <-time.After(timeout):
+		req.h.Error = fmt.Sprintf("rpc server: request handle timeout: expoect within %s", timeout)
+		server.sendResponse(cc, req.h, invalidRequest, sending)
+	case <-called:
+		// 做两个超时处里，如果call处理结束才进行发送超时处理
+		// 如果
+		<-sent
+	}
+
 	server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
 }

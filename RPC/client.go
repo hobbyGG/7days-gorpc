@@ -1,6 +1,7 @@
 package geerpc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hobbyGG/7days-gorpc/RPC/codec"
 )
@@ -169,17 +171,7 @@ func parseOptions(opts ...*Option) (*Option, error) {
 
 // 以指定网络接入RPC服务器
 func Dial(network, address string, opts ...*Option) (client *Client, err error) {
-	opt, err := parseOptions(opts...)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.Dial(network, address)
-	defer func() {
-		if client == nil {
-			_ = conn.Close()
-		}
-	}()
-	return NewClient(conn, opt)
+	return dialTimeout(NewClient, network, address, opts...)
 }
 
 func (client *Client) send(call *Call) {
@@ -221,7 +213,58 @@ func (client *Client) Go(ServiceMethod string, args, reply interface{}, done cha
 	return call
 }
 
-func (client *Client) Call(ServiceMethod string, args, reply interface{}) error {
-	call := <-client.Go(ServiceMethod, args, reply, make(chan *Call, 1)).Done
-	return call.Error
+func (client *Client) Call(ctx context.Context, ServiceMethod string, args, reply interface{}) error {
+	call := client.Go(ServiceMethod, args, reply, make(chan *Call, 1))
+	select {
+	// 将ctx与call的时间进行比较，ctx先done了则算处理完该请求
+	case <-ctx.Done():
+		client.removeCall(call.Seq)
+		return errors.New("rpc client: call failed:" + ctx.Err().Error())
+	case call := <-call.Done:
+		return call.Error
+	}
+}
+
+type clientResult struct {
+	client *Client
+	err    error
+}
+
+type newClientFunc func(conn net.Conn, opt *Option) (client *Client, err error)
+
+func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (client *Client, err error) {
+	opt, err := parseOptions(opts...)
+	if err != nil {
+		log.Println("dial fail, parse option fail")
+		return nil, err
+	}
+	// 添加超时连接处理
+	conn, err := net.DialTimeout(network, address, opt.ConnectionTimeout)
+	if err != nil {
+		return nil, err
+	}
+	// 如果客户端为nil就关闭连接
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+		}
+	}()
+	// 使用子协程创建客户端，以此实现select的超时功能
+	ch := make(chan clientResult)
+	go func() {
+		// 创建客户端
+		client, err := f(conn, opt)
+		ch <- clientResult{client: client, err: err}
+	}()
+	if opt.ConnectionTimeout == 0 {
+		// 如果为1就是不设超时限制，直接返回创建的客户端即可
+		result := <-ch
+		return result.client, result.err
+	}
+	select {
+	case <-time.After(opt.ConnectionTimeout):
+		return nil, fmt.Errorf("rpc client: connect timeout except within %s", opt.ConnectionTimeout)
+	case result := <-ch:
+		return result.client, result.err
+	}
 }
