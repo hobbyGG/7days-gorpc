@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
@@ -230,4 +231,45 @@ func (server *Server) handleRequest(cc codec.Codec, req *request, sending *sync.
 	}
 
 	server.sendResponse(cc, req.h, req.replyv.Interface(), sending)
+}
+
+const (
+	connected        = "200 Connected to Gee RPC"
+	defaultRPCPath   = "/_geeprc_"
+	defaultDebugPath = "/debug/geerpc"
+)
+
+// 使server满足http.handler接口来处理rpc请求
+// 这是一个与Accept同级的方法
+func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// req.Method获取请求方法，只处理CONNECT方法
+	if req.Method != "CONNECT" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = io.WriteString(w, "405 must CONNECT\n")
+		return
+	}
+	// haijack让调用者来管理连接
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		log.Print("rpc hijacking", req.RemoteAddr, ":", err.Error())
+		return
+	}
+	// 连接成功
+	_, _ = io.WriteString(conn, "HTTP/1.0 "+connected+"\n\n")
+	// 让rpc服务接管连接
+	server.ServeConn(conn)
+}
+
+// 在默认路径上将RPC服务注册为HTTP服务
+// 这里访问/_geerpc_即可调用RPC服务
+func (server *Server) HandleHTTP() {
+	http.Handle(defaultRPCPath, server)
+	http.Handle(defaultDebugPath, &debugHTTP{Server: server})
+	log.Println("rpc server debug path:", defaultDebugPath)
+}
+
+// 为默认的server注册http处理方法
+func HandleHTTP() {
+	DefaultServer.HandleHTTP()
 }

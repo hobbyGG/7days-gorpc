@@ -1,6 +1,7 @@
 package geerpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -266,5 +269,40 @@ func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (cli
 		return nil, fmt.Errorf("rpc client: connect timeout except within %s", opt.ConnectionTimeout)
 	case result := <-ch:
 		return result.client, result.err
+	}
+}
+
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	// "CONNECT %s HTTP/1.0\n\n"：这是一个格式化字符串，%s 是一个占位符，它会被 defaultRPCPath 的值替换。\n\n 表示两个换行符，这是 HTTP 协议中请求头和请求体之间的分隔符。
+	_, _ = io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+
+	// 获取指定method的响应
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
+	if err == nil && resp.Status == connected {
+		return NewClient(conn, opt)
+	}
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + resp.Status)
+	}
+	return nil, err
+}
+
+func DialHTTP(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+
+// rpcAddr is a general format (protocol@addr) to represent a rpc server
+// 用法如http@localhost/_geerpc/
+func XDial(rpcAddr string, opts ...*Option) (*Client, error) {
+	parts := strings.Split(rpcAddr, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client err: wrong format '%s', expect protocal@addr", rpcAddr)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		return Dial(protocol, addr, opts...)
 	}
 }
